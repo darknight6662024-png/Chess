@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mobile Chess</title>
+<style>
+body { margin:0; background:#222; display:flex; flex-direction:column; align-items:center; color:white; }
+canvas { touch-action:none; }
+button, select { margin:5px; padding:8px; font-size:16px; }
+</style>
+</head>
+<body>
+
+<div>
+<select id="difficulty">
+<option value="1">Easy</option>
+<option value="2" selected>Medium</option>
+<option value="3">Hard</option>
+</select>
+<button onclick="undo()">Undo</button>
+</div>
+
+<canvas id="board"></canvas>
+
+<script>
+const canvas = document.getElementById("board");
+const ctx = canvas.getContext("2d");
+
+function resize(){
+  let size = Math.min(innerWidth, innerHeight) - 100;
+  canvas.width = size;
+  canvas.height = size;
+}
+resize();
+addEventListener("resize", resize);
+
+let SIZE = () => canvas.width / 8;
+
+const pieces = {
+r:"♜",n:"♞",b:"♝",q:"♛",k:"♚",p:"♟",
+R:"♖",N:"♘",B:"♗",Q:"♕",K:"♔",P:"♙"
+};
+
+let history=[];
+
+// ===== GAME STATE =====
+let board, turn, selected=null, validMoves=[], dragging=null;
+
+function reset(){
+board=[
+["r","n","b","q","k","b","n","r"],
+["p","p","p","p","p","p","p","p"],
+["","","","","","","",""],
+["","","","","","","",""],
+["","","","","","","",""],
+["","","","","","","",""],
+["P","P","P","P","P","P","P","P"],
+["R","N","B","Q","K","B","N","R"]
+];
+turn="white";
+}
+reset();
+
+// ===== DRAW =====
+function draw(){
+ctx.clearRect(0,0,canvas.width,canvas.height);
+
+for(let y=0;y<8;y++){
+for(let x=0;x<8;x++){
+ctx.fillStyle=(x+y)%2?"#769656":"#eeeed2";
+ctx.fillRect(x*SIZE(),y*SIZE(),SIZE(),SIZE());
+}
+}
+
+// highlights
+if(selected){
+ctx.fillStyle="rgba(0,0,255,0.3)";
+ctx.fillRect(selected.x*SIZE(),selected.y*SIZE(),SIZE(),SIZE());
+}
+
+validMoves.forEach(m=>{
+ctx.fillStyle="rgba(0,255,0,0.4)";
+ctx.beginPath();
+ctx.arc(m.x*SIZE()+SIZE()/2,m.y*SIZE()+SIZE()/2,10,0,Math.PI*2);
+ctx.fill();
+});
+
+// pieces
+for(let y=0;y<8;y++){
+for(let x=0;x<8;x++){
+let p=board[y][x];
+if(p){
+ctx.font=SIZE()*0.8+"px serif";
+ctx.fillStyle=p===p.toUpperCase()?"white":"black";
+ctx.fillText(pieces[p],x*SIZE()+SIZE()*0.2,y*SIZE()+SIZE()*0.8);
+}
+}
+}
+}
+
+// ===== HELPERS =====
+function isWhite(p){ return p===p.toUpperCase(); }
+function inBounds(x,y){ return x>=0&&x<8&&y>=0&&y<8; }
+
+// ===== MOVE GEN (REAL-ish) =====
+function getMoves(x,y){
+let p=board[y][x];
+if(!p) return [];
+let moves=[];
+
+const add=(nx,ny)=>{
+if(inBounds(nx,ny)){
+let t=board[ny][nx];
+if(!t||isWhite(t)!==isWhite(p)) moves.push({x:nx,y:ny});
+}
+};
+
+if(p.toLowerCase()==="p"){
+let dir=isWhite(p)?-1:1;
+add(x,y+dir);
+add(x-1,y+dir);
+add(x+1,y+dir);
+}
+
+if(p.toLowerCase()==="n"){
+[[1,2],[2,1],[-1,2],[-2,1],[1,-2],[2,-1],[-1,-2],[-2,-1]]
+.forEach(d=>add(x+d[0],y+d[1]));
+}
+
+if("brq".includes(p.toLowerCase())){
+let dirs=[];
+if("bq".includes(p.toLowerCase())) dirs.push([1,1],[-1,1],[1,-1],[-1,-1]);
+if("rq".includes(p.toLowerCase())) dirs.push([1,0],[-1,0],[0,1],[0,-1]);
+
+dirs.forEach(d=>{
+let nx=x+d[0],ny=y+d[1];
+while(inBounds(nx,ny)){
+let t=board[ny][nx];
+if(!t) moves.push({x:nx,y:ny});
+else{
+if(isWhite(t)!==isWhite(p)) moves.push({x:nx,y:ny});
+break;
+}
+nx+=d[0];ny+=d[1];
+}
+});
+}
+
+if(p.toLowerCase()==="k"){
+for(let dx=-1;dx<=1;dx++){
+for(let dy=-1;dy<=1;dy++){
+if(dx||dy) add(x+dx,y+dy);
+}
+}
+}
+
+return moves;
+}
+
+// ===== MOVE =====
+function makeMove(fx,fy,tx,ty){
+history.push(JSON.stringify(board));
+board[ty][tx]=board[fy][fx];
+board[fy][fx]="";
+turn = turn==="white"?"black":"white";
+playSound();
+}
+
+// ===== UNDO =====
+function undo(){
+if(history.length){
+board=JSON.parse(history.pop());
+turn="white";
+}
+}
+
+// ===== AI =====
+function aiMove(){
+let depth=parseInt(document.getElementById("difficulty").value);
+let bestScore=-9999,best;
+
+function evalBoard(){
+let val=0;
+let values={p:1,n:3,b:3,r:5,q:9,k:100};
+board.flat().forEach(p=>{
+if(!p)return;
+val+=isWhite(p)?values[p.toLowerCase()]:-values[p.toLowerCase()];
+});
+return val;
+}
+
+function minimax(d,max){
+if(d===0) return evalBoard();
+let best=max?-9999:9999;
+
+for(let y=0;y<8;y++){
+for(let x=0;x<8;x++){
+let p=board[y][x];
+if(p && (!isWhite(p))){
+let moves=getMoves(x,y);
+moves.forEach(m=>{
+let backup=board[m.y][m.x];
+makeMove(x,y,m.x,m.y);
+let val=minimax(d-1,!max);
+board[y][x]=board[m.y][m.x];
+board[m.y][m.x]=backup;
+
+best=max?Math.max(best,val):Math.min(best,val);
+});
+}
+}
+}
+return best;
+}
+
+for(let y=0;y<8;y++){
+for(let x=0;x<8;x++){
+let p=board[y][x];
+if(p && !isWhite(p)){
+getMoves(x,y).forEach(m=>{
+let backup=board[m.y][m.x];
+makeMove(x,y,m.x,m.y);
+let score=minimax(depth,false);
+board[y][x]=board[m.y][m.x];
+board[m.y][m.x]=backup;
+
+if(score>bestScore){bestScore=score;best=[x,y,m.x,m.y];}
+});
+}
+}
+}
+
+if(best) makeMove(...best);
+}
+
+// ===== INPUT =====
+canvas.addEventListener("pointerdown", e=>{
+let rect=canvas.getBoundingClientRect();
+let x=Math.floor((e.clientX-rect.left)/SIZE());
+let y=Math.floor((e.clientY-rect.top)/SIZE());
+
+let p=board[y][x];
+
+if(selected){
+let move=validMoves.find(m=>m.x===x&&m.y===y);
+if(move){
+makeMove(selected.x,selected.y,x,y);
+selected=null; validMoves=[];
+setTimeout(aiMove,200);
+return;
+}
+}
+
+if(p && isWhite(p)){
+selected={x,y};
+validMoves=getMoves(x,y);
+}else{
+selected=null; validMoves=[];
+}
+});
+
+// ===== SOUND =====
+function playSound(){
+let ctx2=new AudioContext();
+let o=ctx2.createOscillator();
+o.connect(ctx2.destination);
+o.start();
+o.stop(ctx2.currentTime+0.1);
+}
+
+// ===== LOOP =====
+function loop(){
+draw();
+requestAnimationFrame(loop);
+}
+loop();
+</script>
+
+</body>
+</html>
